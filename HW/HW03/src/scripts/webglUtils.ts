@@ -77,3 +77,7 @@ export function getCubeNormalOnVertices(vertices: number[]): number[] {
     }
     return normals
 }
+
+export function degToRad(angle: number): number {
+    return angle * Math.PI / 180
+}
