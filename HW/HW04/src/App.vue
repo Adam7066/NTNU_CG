@@ -21,24 +21,24 @@ import {onMounted, ref, watch} from 'vue'
 import {onKeyStroke} from '@vueuse/core'
 import {
     createProgram,
-    getCubeNormalOnVertices,
     initVertexBufForLaterUse,
     initAttributeVariable,
+    initFramebuffer,
     degToRad
 } from './scripts/webglUtils'
-import vertShaderSource from './shaders/main.vert'
-import fragShaderSource from './shaders/main.frag'
+import mainVert from './shaders/main.vert'
+import mainFrag from './shaders/main.frag'
+import quadVert from './shaders/quad.vert'
+import quadFrag from './shaders/quad.frag'
 import {mat4, vec4} from 'gl-matrix'
-import {VertexInfo} from './scripts/types'
-
-onMounted(() => {
-    canvas = canvasRef.value as HTMLCanvasElement
-    initDraw()
-})
+import {VertexInfo, FramebufferInfo} from './scripts/types'
+import {load} from '@loaders.gl/core';
+import {OBJLoader} from '@loaders.gl/obj';
 
 declare global {
     interface WebGLProgram {
         a_Position: number
+        a_TexCoord: number
         a_Normal: number
         u_MvpMatrix: WebGLUniformLocation | null
         u_modelMatrix: WebGLUniformLocation | null
@@ -50,6 +50,7 @@ declare global {
         u_Ks: WebGLUniformLocation | null
         u_shininess: WebGLUniformLocation | null
         u_Color: WebGLUniformLocation | null
+        u_Sampler0: WebGLUniformLocation | null
     }
 }
 
@@ -57,15 +58,31 @@ const canvasRef = ref<HTMLCanvasElement | null>(null)
 let canvas: HTMLCanvasElement
 let gl: WebGLRenderingContext
 let program: WebGLProgram
+let quadProgram: WebGLProgram
 
 let cube: VertexInfo[] = []
 let angleX = 0, angleY = 0
 
-const initDraw = () => {
+onMounted(async () => {
+    canvas = canvasRef.value as HTMLCanvasElement
     gl = canvas.getContext('webgl') as WebGLRenderingContext
     gl.enable(gl.DEPTH_TEST)
 
-    program = createProgram(gl, vertShaderSource, fragShaderSource)
+    initProgram()
+
+    const cubeObj = await load('cube.obj', OBJLoader)
+    let o = initVertexBufForLaterUse(gl,
+        <Float32Array>cubeObj.attributes['POSITION'].value,
+        <Float32Array>cubeObj.attributes['NORMAL'].value,
+        <Float32Array>cubeObj.attributes['TEXCOORD_0'].value
+    );
+    cube.push(o)
+
+    draw()
+})
+
+const initProgram = () => {
+    program = createProgram(gl, mainVert, mainFrag)
     program.a_Position = gl.getAttribLocation(program, 'a_Position');
     program.a_Normal = gl.getAttribLocation(program, 'a_Normal');
     program.u_MvpMatrix = gl.getUniformLocation(program, 'u_MvpMatrix');
@@ -79,19 +96,20 @@ const initDraw = () => {
     program.u_shininess = gl.getUniformLocation(program, 'u_shininess');
     program.u_Color = gl.getUniformLocation(program, 'u_Color');
 
-    let cubeVertices = [
-        1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, //front
-        1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, //right
-        1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, //up
-        -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, //left
-        -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, //bottom
-        1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0 //back
-    ]
-    let cubeNormals = getCubeNormalOnVertices(cubeVertices)
-    let o = initVertexBufForLaterUse(gl, cubeVertices, cubeNormals, null)
-    cube.push(o)
-
-    draw()
+    quadProgram = createProgram(gl, quadVert, quadFrag)
+    quadProgram.a_Position = gl.getAttribLocation(quadProgram, 'a_Position');
+    quadProgram.a_TexCoord = gl.getAttribLocation(quadProgram, 'a_TexCoord');
+    quadProgram.a_Normal = gl.getAttribLocation(quadProgram, 'a_Normal');
+    quadProgram.u_MvpMatrix = gl.getUniformLocation(quadProgram, 'u_MvpMatrix');
+    quadProgram.u_modelMatrix = gl.getUniformLocation(quadProgram, 'u_modelMatrix');
+    quadProgram.u_normalMatrix = gl.getUniformLocation(quadProgram, 'u_normalMatrix');
+    quadProgram.u_LightPosition = gl.getUniformLocation(quadProgram, 'u_LightPosition');
+    quadProgram.u_ViewPosition = gl.getUniformLocation(quadProgram, 'u_ViewPosition');
+    quadProgram.u_Ka = gl.getUniformLocation(quadProgram, 'u_Ka');
+    quadProgram.u_Kd = gl.getUniformLocation(quadProgram, 'u_Kd');
+    quadProgram.u_Ks = gl.getUniformLocation(quadProgram, 'u_Ks');
+    quadProgram.u_shininess = gl.getUniformLocation(quadProgram, 'u_shininess');
+    quadProgram.u_Sampler0 = gl.getUniformLocation(quadProgram, "u_Sampler0")
 }
 
 let camera = [0, 3, 7]
@@ -172,7 +190,72 @@ onKeyStroke(['g', 'G'], () => {
 })
 
 const draw = () => {
-    gl.clearColor(0.2, 0.2, 0.2, 1)
+    let fbo = initFramebuffer(gl, 512, 512)
+
+    gl.useProgram(program)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)
+    gl.viewport(0, 0, 512, 512)
+    const cameraBackup = camera
+    camera = [7, 3, 7]
+    drawAll()
+    camera = cameraBackup
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, canvas.width, canvas.height)
+    drawAll()
+    gl.useProgram(quadProgram)
+    drawQuad(fbo)
+}
+
+const drawQuad = (fbo: FramebufferInfo) => {
+    let modelMatrix = mat4.create()
+    mat4.fromRotation(modelMatrix, degToRad(angleY), [1, 0, 0])
+    mat4.rotate(modelMatrix, modelMatrix, degToRad(angleX), [0, 1, 0])
+    let zoomVal = zoom.value / 10
+    mat4.scale(modelMatrix, modelMatrix, [zoomVal, zoomVal, zoomVal])
+
+    mat4.translate(modelMatrix, modelMatrix, [0, 0, -1.5])
+    mat4.scale(modelMatrix, modelMatrix, [1.5, 1, 0.01])
+
+    // mvp: projection * view * model matrix
+    let proMatrix = mat4.create()
+    let viewMatrix = mat4.create()
+    let mvpMatrix = mat4.create()
+    mat4.perspective(proMatrix, degToRad(30), 1, 0.1, 100)
+    mat4.lookAt(viewMatrix, new Float32Array(camera), [0, 0, 0], [0, 1, 0])
+    mat4.multiply(mvpMatrix, proMatrix, viewMatrix)
+    mat4.multiply(mvpMatrix, mvpMatrix, modelMatrix)
+
+    // normal matrix
+    let normalMatrix = mat4.create()
+    mat4.invert(normalMatrix, modelMatrix)
+    mat4.transpose(normalMatrix, normalMatrix)
+
+    gl.uniform3f(quadProgram.u_LightPosition, light[0], light[1], light[2])
+    gl.uniform3f(quadProgram.u_ViewPosition, camera[0], camera[1], camera[2])
+    gl.uniform1f(quadProgram.u_Ka, 0.2)
+    gl.uniform1f(quadProgram.u_Kd, 0.7)
+    gl.uniform1f(quadProgram.u_Ks, 1.0)
+    gl.uniform1f(quadProgram.u_shininess, 10.0)
+    gl.uniform1i(quadProgram.u_Sampler0, 0);
+
+    gl.uniformMatrix4fv(quadProgram.u_MvpMatrix, false, mvpMatrix)
+    gl.uniformMatrix4fv(quadProgram.u_modelMatrix, false, modelMatrix)
+    gl.uniformMatrix4fv(quadProgram.u_normalMatrix, false, normalMatrix)
+
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, fbo.texture)
+
+    for (let i = 0; i < cube.length; i++) {
+        initAttributeVariable(gl, quadProgram.a_Position, cube[i].vertexBuffer)
+        initAttributeVariable(gl, quadProgram.a_TexCoord, cube[i].texCoordBuffer);
+        initAttributeVariable(gl, quadProgram.a_Normal, cube[i].normalBuffer)
+        gl.drawArrays(gl.TRIANGLES, 0, cube[i].numVertices)
+    }
+}
+
+const drawAll = () => {
+    gl.clearColor(0.6, 0.6, 0.6, 1)
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
     let mdlMatrix = mat4.create()

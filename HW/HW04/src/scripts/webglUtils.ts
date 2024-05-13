@@ -1,4 +1,4 @@
-import {BufferInfo, VertexInfo} from './types'
+import {BufferInfo, FramebufferInfo, VertexInfo} from './types'
 
 function createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
     const shader = gl.createShader(type)
@@ -16,7 +16,6 @@ export function createProgram(gl: WebGLRenderingContext, vexShaderSource: string
     gl.attachShader(program, vexShader)
     gl.attachShader(program, fragShader)
     gl.linkProgram(program)
-    gl.useProgram(program)
     return program
 }
 
@@ -38,12 +37,12 @@ function initArrBufForLaterUse(gl: WebGLRenderingContext, data: Float32Array, nu
     }
 }
 
-export function initVertexBufForLaterUse(gl: WebGLRenderingContext, vertices: number[], normals: number[] | null, texCoords: number[] | null): VertexInfo {
+export function initVertexBufForLaterUse(gl: WebGLRenderingContext, vertices: Float32Array, normals: Float32Array | null, texCoords: Float32Array | null): VertexInfo {
     let nVertices = vertices.length / 3
     let o = {} as VertexInfo
-    o.vertexBuffer = initArrBufForLaterUse(gl, new Float32Array(vertices), 3, gl.FLOAT)
-    if (normals != null) o.normalBuffer = initArrBufForLaterUse(gl, new Float32Array(normals), 3, gl.FLOAT)
-    if (texCoords != null) o.texCoordBuffer = initArrBufForLaterUse(gl, new Float32Array(texCoords), 2, gl.FLOAT)
+    o.vertexBuffer = initArrBufForLaterUse(gl, vertices, 3, gl.FLOAT)
+    if (normals != null) o.normalBuffer = initArrBufForLaterUse(gl, normals, 3, gl.FLOAT)
+    if (texCoords != null) o.texCoordBuffer = initArrBufForLaterUse(gl, texCoords, 2, gl.FLOAT)
     o.numVertices = nVertices
     gl.bindBuffer(gl.ARRAY_BUFFER, null)
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)
@@ -76,6 +75,30 @@ export function getCubeNormalOnVertices(vertices: number[]): number[] {
         normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz);
     }
     return normals
+}
+
+export function initFramebuffer(gl: WebGLRenderingContext, offScreenWidth: number, offScreenHeight: number): FramebufferInfo {
+    let frameBuf = {} as FramebufferInfo
+
+    let texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, offScreenWidth, offScreenHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+    let depthBuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, offScreenWidth, offScreenHeight);
+
+    let frameBuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+    if (frameBuffer && texture) {
+        frameBuf.framebuffer = frameBuffer
+        frameBuf.texture = texture
+    }
+    return frameBuf
 }
 
 export function degToRad(angle: number): number {
