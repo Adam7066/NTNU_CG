@@ -10,3 +10,8 @@ export interface VertexInfo {
     texCoordBuffer: BufferInfo
     numVertices: number
 }
+
+export interface FramebufferInfo {
+    framebuffer: WebGLFramebuffer
+    texture: WebGLTexture
+}
