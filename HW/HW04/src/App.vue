@@ -21,19 +21,17 @@ import {onMounted, ref, watch} from 'vue'
 import {onKeyStroke} from '@vueuse/core'
 import {
     createProgram,
-    initVertexBufForLaterUse,
     initAttributeVariable,
     initFramebuffer,
-    degToRad
+    loadOBJtoCreateVBO
 } from './scripts/webglUtils'
+import {degToRad} from './scripts/utils'
 import mainVert from './shaders/main.vert'
 import mainFrag from './shaders/main.frag'
 import quadVert from './shaders/quad.vert'
 import quadFrag from './shaders/quad.frag'
 import {mat4, vec4} from 'gl-matrix'
 import {VertexInfo, FramebufferInfo} from './scripts/types'
-import {load} from '@loaders.gl/core';
-import {OBJLoader} from '@loaders.gl/obj';
 
 declare global {
     interface WebGLProgram {
@@ -60,8 +58,12 @@ let gl: WebGLRenderingContext
 let program: WebGLProgram
 let quadProgram: WebGLProgram
 
-let cube: VertexInfo[] = []
+let cubeObj: VertexInfo[] = []
+let taroumaruObj: VertexInfo[] = []
 let angleX = 0, angleY = 0
+let textures = new Map<string, WebGLTexture>()
+let objCompImgIndex: string[] = []
+let imgNames: string[] = []
 
 onMounted(async () => {
     canvas = canvasRef.value as HTMLCanvasElement
@@ -70,16 +72,64 @@ onMounted(async () => {
 
     initProgram()
 
-    const cubeObj = await load('cube.obj', OBJLoader)
-    let o = initVertexBufForLaterUse(gl,
-        <Float32Array>cubeObj.attributes['POSITION'].value,
-        <Float32Array>cubeObj.attributes['NORMAL'].value,
-        <Float32Array>cubeObj.attributes['TEXCOORD_0'].value
-    );
-    cube.push(o)
+    cubeObj = await loadOBJtoCreateVBO(gl, 'cube.obj')
+
+    taroumaruObj = await loadOBJtoCreateVBO(gl, 'taroumaru/taroumaru.obj')
+    let taroumaruObjTxt = await (await fetch('taroumaru/taroumaru.obj')).text()
+    let taroumaruMtlTxt = await (await fetch('taroumaru/taroumaru.mtl')).text()
+    objCompImgIndex = parseTexture(taroumaruObjTxt, taroumaruMtlTxt)
+    imgNames = Array.from(new Set(objCompImgIndex))
+    for (let i = 0; i < imgNames.length; i++) {
+        let img = new Image()
+        img.onload = function () {
+            initTexture(gl, img, imgNames[i])
+        }
+        img.src = 'taroumaru/' + imgNames[i]
+    }
 
     draw()
 })
+
+const initTexture = (gl: WebGLRenderingContext, img: HTMLImageElement, imgName: string) => {
+    let tex = gl.createTexture()
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+    if (tex) textures.set(imgName, tex)
+}
+
+const parseTexture = (objContent: string, mtlContent: string): string[] => {
+    const usemtls: string[] = []
+    const objLines = objContent.split('\n')
+    objLines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts[0] === 'usemtl') {
+            usemtls.push(parts[1]);
+        }
+    });
+
+    const mtlLines = mtlContent.split('\n')
+    const textureMap = new Map<string, string>()
+    let currentMtl = ''
+    mtlLines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts[0] === 'newmtl') {
+            currentMtl = parts[1]
+        } else if (parts[0] === 'map_Kd' && currentMtl !== '') {
+            textureMap.set(currentMtl, parts[1])
+        }
+    });
+
+    const result: string[] = []
+    usemtls.forEach(usemtl => {
+        const texture = textureMap.get(usemtl)
+        if (texture) {
+            result.push(texture)
+        }
+    })
+    return result
+}
 
 const initProgram = () => {
     program = createProgram(gl, mainVert, mainFrag)
@@ -128,6 +178,286 @@ const zoom = ref(10)
 watch(zoom, () => {
     draw()
 })
+
+const draw = () => {
+    let fbo = initFramebuffer(gl, 512, 512)
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)
+    gl.viewport(0, 0, 512, 512)
+    camera = [7, 3, 7]
+    drawAll()
+    camera = [0, 3, 7]
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, canvas.width, canvas.height)
+    drawAll()
+
+    drawQuad(fbo)
+}
+
+const drawAll = () => {
+    gl.clearColor(0.6, 0.6, 0.6, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+    let mdlMatrix = mat4.create()
+
+    // draw the ground
+    mat4.translate(mdlMatrix, mdlMatrix, [0, -1, 0])
+    mat4.scale(mdlMatrix, mdlMatrix, [1.5, 0.1, 1.5])
+    drawOneObject(cubeObj, mdlMatrix, 1.0, 0.4, 0.4, true)
+
+    // draw the cube on the light source
+    mat4.identity(mdlMatrix)
+    mat4.translate(mdlMatrix, mdlMatrix, new Float32Array(light))
+    mat4.scale(mdlMatrix, mdlMatrix, [0.1, 0.1, 0.1])
+    drawOneObject(cubeObj, mdlMatrix, 0.9, 0.9, 0.3, false)
+
+    drawCar()
+    drawItem()
+    drawTaroumaru()
+}
+
+const drawCar = () => {
+    let carMdlMatrix = mat4.create()
+    mat4.identity(carMdlMatrix)
+    // body
+    mat4.translate(carMdlMatrix, carMdlMatrix, [carX, -0.6, carZ])
+    let carBodyMdlMatrix = mat4.clone(carMdlMatrix)
+    mat4.scale(carMdlMatrix, carMdlMatrix, [0.4, 0.1, 0.2])
+    drawOneObject(cubeObj, carMdlMatrix, 0.4, 0.4, 1.0, true)
+    // wheels
+    for (let i = 0; i < 4; i++) {
+        mat4.copy(carMdlMatrix, carBodyMdlMatrix)
+        let x = i < 2 ? 0.3 : -0.3
+        let z = i % 2 === 0 ? 0.15 : -0.15
+        mat4.translate(carMdlMatrix, carMdlMatrix, [x, -0.2, z])
+        mat4.scale(carMdlMatrix, carMdlMatrix, [0.1, 0.1, 0.05])
+        drawOneObject(cubeObj, carMdlMatrix, 1, 1, 1, true)
+    }
+    // arm1
+    mat4.copy(carMdlMatrix, carBodyMdlMatrix)
+    mat4.translate(carMdlMatrix, carMdlMatrix, [-0.35, 0.15, 0])
+    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[0]))
+    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
+    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
+    drawOneObject(cubeObj, carMdlMatrix, 0.5, 1, 0, true)
+    // arm2
+    mat4.scale(carMdlMatrix, carMdlMatrix, [1 / 0.05, 1 / 0.2, 1 / 0.05])
+    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
+    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[1]))
+    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.2, 0])
+    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
+    drawOneObject(cubeObj, carMdlMatrix, 0.5, 0, 1, true)
+    // arm3
+    mat4.scale(carMdlMatrix, carMdlMatrix, [1 / 0.05, 1 / 0.2, 1 / 0.05])
+    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.2, 0])
+    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[2]))
+    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
+
+    // calculate the hand position
+    handPos = vec4.fromValues(0, 0.15, 0, 1)
+    vec4.transformMat4(handPos, handPos, carMdlMatrix)
+
+    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
+    drawOneObject(cubeObj, carMdlMatrix, 1, 0.5, 0, true)
+}
+
+const drawItem = () => {
+    let itemMdlMatrix = mat4.create()
+    mat4.identity(itemMdlMatrix)
+    mat4.translate(itemMdlMatrix, itemMdlMatrix, new Float32Array(itemXYZ))
+
+    itemPos = vec4.fromValues(0, 0, 0, 1)
+    vec4.transformMat4(itemPos, itemPos, itemMdlMatrix)
+
+    let dist = vec4.distance(handPos, itemPos)
+    let bodyColor = [0.5, 0.5, 0.5]
+    if (isGrab) {
+        for (let i = 0; i < 3; ++i)
+            itemXYZ[i] = handPos[i]
+        bodyColor = [0.9, 0.3, 0.9]
+    } else if (dist < 0.2) {
+        isTouch = true
+        bodyColor = [0.9, 0.9, 0.3]
+    } else {
+        isTouch = false
+    }
+
+    mat4.identity(itemMdlMatrix)
+    mat4.translate(itemMdlMatrix, itemMdlMatrix, new Float32Array(itemXYZ))
+    let itemBodyMdlMatrix = mat4.clone(itemMdlMatrix)
+    mat4.scale(itemMdlMatrix, itemMdlMatrix, [0.15, 0.15, 0.15])
+    drawOneObject(cubeObj, itemMdlMatrix, bodyColor[0], bodyColor[1], bodyColor[2], true)
+
+    for (let i = 0; i < 2; ++i) {
+        mat4.copy(itemMdlMatrix, itemBodyMdlMatrix)
+        const z = i === 0 ? 0.2 : -0.2
+        mat4.translate(itemMdlMatrix, itemMdlMatrix, [0, 0.15, z])
+        mat4.rotateZ(itemMdlMatrix, itemMdlMatrix, degToRad(itemAngle[i]))
+        mat4.translate(itemMdlMatrix, itemMdlMatrix, [0, 0.15, 0])
+        mat4.scale(itemMdlMatrix, itemMdlMatrix, [0.05, 0.15, 0.05])
+        drawOneObject(cubeObj, itemMdlMatrix, 0.3, 1, 0.8, true)
+    }
+}
+
+const drawTaroumaru = () => {
+    gl.useProgram(quadProgram)
+
+    let mdlMatrix = mat4.create()
+    mat4.translate(mdlMatrix, mdlMatrix, [1, -0.9, 1])
+    mat4.rotateY(mdlMatrix, mdlMatrix, degToRad(-30))
+
+    drawWithTexture(
+        taroumaruObj,
+        mdlMatrix,
+        taroumaruObj.map((_, i) => textures.get(objCompImgIndex[i]) as WebGLTexture),
+        true
+    )
+}
+
+const drawQuad = (fbo: FramebufferInfo) => {
+    let mdlMatrix = mat4.create()
+    mat4.translate(mdlMatrix, mdlMatrix, [0, 0, -1.5])
+    mat4.scale(mdlMatrix, mdlMatrix, [1.5, 1, 0.01])
+    drawWithTexture(cubeObj, mdlMatrix, new Array(fbo.texture), true)
+}
+
+// obj: the object components
+// mdlMatrix: the model matrix without mouse rotation
+// colorR, G, B: object color
+const drawOneObject = (obj: VertexInfo[], mdlMatrix: mat4, colorR: number, colorG: number, colorB: number, mouseRotation: boolean) => {
+    gl.useProgram(program)
+    // model Matrix (part of the mvp matrix)
+    let modelMatrix = mat4.create()
+
+    if (mouseRotation) {
+        mat4.fromRotation(modelMatrix, degToRad(angleY), [1, 0, 0])
+        mat4.rotate(modelMatrix, modelMatrix, degToRad(angleX), [0, 1, 0])
+    }
+
+    let zoomVal = zoom.value / 10
+    mat4.scale(modelMatrix, modelMatrix, [zoomVal, zoomVal, zoomVal])
+
+    mat4.multiply(modelMatrix, modelMatrix, mdlMatrix)
+
+    // mvp: projection * view * model matrix
+    let proMatrix = mat4.create()
+    let viewMatrix = mat4.create()
+    let mvpMatrix = mat4.create()
+    mat4.perspective(proMatrix, degToRad(30), 1, 0.1, 100)
+    mat4.lookAt(viewMatrix, new Float32Array(camera), [0, 0, 0], [0, 1, 0])
+    mat4.multiply(mvpMatrix, proMatrix, viewMatrix)
+    mat4.multiply(mvpMatrix, mvpMatrix, modelMatrix)
+
+    // normal matrix
+    let normalMatrix = mat4.create()
+    mat4.invert(normalMatrix, modelMatrix)
+    mat4.transpose(normalMatrix, normalMatrix)
+
+    gl.uniform3f(program.u_LightPosition, light[0], light[1], light[2])
+    gl.uniform3f(program.u_ViewPosition, camera[0], camera[1], camera[2])
+    gl.uniform1f(program.u_Ka, 0.2)
+    gl.uniform1f(program.u_Kd, 0.7)
+    gl.uniform1f(program.u_Ks, 1.0)
+    gl.uniform1f(program.u_shininess, 10.0)
+    gl.uniform3f(program.u_Color, colorR, colorG, colorB)
+
+    gl.uniformMatrix4fv(program.u_MvpMatrix, false, mvpMatrix)
+    gl.uniformMatrix4fv(program.u_modelMatrix, false, modelMatrix)
+    gl.uniformMatrix4fv(program.u_normalMatrix, false, normalMatrix)
+
+    for (let i = 0; i < obj.length; i++) {
+        initAttributeVariable(gl, program.a_Position, obj[i].vertexBuffer)
+        initAttributeVariable(gl, program.a_Normal, obj[i].normalBuffer)
+        gl.drawArrays(gl.TRIANGLES, 0, obj[i].numVertices)
+    }
+}
+
+const drawWithTexture = (obj: VertexInfo[], mdlMatrix: mat4, textures: WebGLTexture[], mouseRotation: boolean) => {
+    gl.useProgram(quadProgram)
+    // model Matrix (part of the mvp matrix)
+    let modelMatrix = mat4.create()
+
+    if (mouseRotation) {
+        mat4.fromRotation(modelMatrix, degToRad(angleY), [1, 0, 0])
+        mat4.rotate(modelMatrix, modelMatrix, degToRad(angleX), [0, 1, 0])
+    }
+
+    let zoomVal = zoom.value / 10
+    mat4.scale(modelMatrix, modelMatrix, [zoomVal, zoomVal, zoomVal])
+
+    mat4.multiply(modelMatrix, modelMatrix, mdlMatrix)
+
+    // mvp: projection * view * model matrix
+    let proMatrix = mat4.create()
+    let viewMatrix = mat4.create()
+    let mvpMatrix = mat4.create()
+    mat4.perspective(proMatrix, degToRad(30), 1, 0.1, 100)
+    mat4.lookAt(viewMatrix, new Float32Array(camera), [0, 0, 0], [0, 1, 0])
+    mat4.multiply(mvpMatrix, proMatrix, viewMatrix)
+    mat4.multiply(mvpMatrix, mvpMatrix, modelMatrix)
+
+    // normal matrix
+    let normalMatrix = mat4.create()
+    mat4.invert(normalMatrix, modelMatrix)
+    mat4.transpose(normalMatrix, normalMatrix)
+
+    gl.uniform3f(quadProgram.u_LightPosition, light[0], light[1], light[2])
+    gl.uniform3f(quadProgram.u_ViewPosition, camera[0], camera[1], camera[2])
+    gl.uniform1f(quadProgram.u_Ka, 0.2)
+    gl.uniform1f(quadProgram.u_Kd, 0.7)
+    gl.uniform1f(quadProgram.u_Ks, 1.0)
+    gl.uniform1f(quadProgram.u_shininess, 10.0)
+
+    gl.uniformMatrix4fv(quadProgram.u_MvpMatrix, false, mvpMatrix)
+    gl.uniformMatrix4fv(quadProgram.u_modelMatrix, false, modelMatrix)
+    gl.uniformMatrix4fv(quadProgram.u_normalMatrix, false, normalMatrix)
+
+    for (let i = 0; i < obj.length; i++) {
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, textures[i])
+        gl.uniform1i(quadProgram.u_Sampler0, 0);
+
+        initAttributeVariable(gl, quadProgram.a_Position, obj[i].vertexBuffer)
+        initAttributeVariable(gl, quadProgram.a_TexCoord, obj[i].texCoordBuffer);
+        initAttributeVariable(gl, quadProgram.a_Normal, obj[i].normalBuffer)
+        gl.drawArrays(gl.TRIANGLES, 0, obj[i].numVertices)
+    }
+}
+
+let mouseLastX: number
+let mouseLastY: number
+let mouseDragging = false
+
+const mouseDown = (ev: MouseEvent) => {
+    let x = ev.clientX;
+    let y = ev.clientY;
+    let rect = (ev.target as HTMLElement).getBoundingClientRect();
+    if (rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom) {
+        mouseLastX = x;
+        mouseLastY = y;
+        mouseDragging = true;
+    }
+}
+
+const mouseUp = () => {
+    mouseDragging = false;
+}
+
+function mouseMove(ev: MouseEvent) {
+    let x = ev.clientX;
+    let y = ev.clientY;
+    if (mouseDragging) {
+        const factor = 100 / canvas.height; // 100 determine the speed you rotate the object
+        const dx = factor * (x - mouseLastX);
+        const dy = factor * (y - mouseLastY);
+        angleX += dx;
+        angleY += dy;
+    }
+    mouseLastX = x;
+    mouseLastY = y;
+    draw();
+}
 
 onKeyStroke(['w', 'W'], () => {
     if (carZ >= -1.1) carZ -= 0.1
@@ -188,257 +518,4 @@ onKeyStroke(['g', 'G'], () => {
     if (isTouch) isGrab = !isGrab
     draw()
 })
-
-const draw = () => {
-    let fbo = initFramebuffer(gl, 512, 512)
-
-    gl.useProgram(program)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer)
-    gl.viewport(0, 0, 512, 512)
-    const cameraBackup = camera
-    camera = [7, 3, 7]
-    drawAll()
-    camera = cameraBackup
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.viewport(0, 0, canvas.width, canvas.height)
-    drawAll()
-    gl.useProgram(quadProgram)
-    drawQuad(fbo)
-}
-
-const drawQuad = (fbo: FramebufferInfo) => {
-    let modelMatrix = mat4.create()
-    mat4.fromRotation(modelMatrix, degToRad(angleY), [1, 0, 0])
-    mat4.rotate(modelMatrix, modelMatrix, degToRad(angleX), [0, 1, 0])
-    let zoomVal = zoom.value / 10
-    mat4.scale(modelMatrix, modelMatrix, [zoomVal, zoomVal, zoomVal])
-
-    mat4.translate(modelMatrix, modelMatrix, [0, 0, -1.5])
-    mat4.scale(modelMatrix, modelMatrix, [1.5, 1, 0.01])
-
-    // mvp: projection * view * model matrix
-    let proMatrix = mat4.create()
-    let viewMatrix = mat4.create()
-    let mvpMatrix = mat4.create()
-    mat4.perspective(proMatrix, degToRad(30), 1, 0.1, 100)
-    mat4.lookAt(viewMatrix, new Float32Array(camera), [0, 0, 0], [0, 1, 0])
-    mat4.multiply(mvpMatrix, proMatrix, viewMatrix)
-    mat4.multiply(mvpMatrix, mvpMatrix, modelMatrix)
-
-    // normal matrix
-    let normalMatrix = mat4.create()
-    mat4.invert(normalMatrix, modelMatrix)
-    mat4.transpose(normalMatrix, normalMatrix)
-
-    gl.uniform3f(quadProgram.u_LightPosition, light[0], light[1], light[2])
-    gl.uniform3f(quadProgram.u_ViewPosition, camera[0], camera[1], camera[2])
-    gl.uniform1f(quadProgram.u_Ka, 0.2)
-    gl.uniform1f(quadProgram.u_Kd, 0.7)
-    gl.uniform1f(quadProgram.u_Ks, 1.0)
-    gl.uniform1f(quadProgram.u_shininess, 10.0)
-    gl.uniform1i(quadProgram.u_Sampler0, 0);
-
-    gl.uniformMatrix4fv(quadProgram.u_MvpMatrix, false, mvpMatrix)
-    gl.uniformMatrix4fv(quadProgram.u_modelMatrix, false, modelMatrix)
-    gl.uniformMatrix4fv(quadProgram.u_normalMatrix, false, normalMatrix)
-
-    gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, fbo.texture)
-
-    for (let i = 0; i < cube.length; i++) {
-        initAttributeVariable(gl, quadProgram.a_Position, cube[i].vertexBuffer)
-        initAttributeVariable(gl, quadProgram.a_TexCoord, cube[i].texCoordBuffer);
-        initAttributeVariable(gl, quadProgram.a_Normal, cube[i].normalBuffer)
-        gl.drawArrays(gl.TRIANGLES, 0, cube[i].numVertices)
-    }
-}
-
-const drawAll = () => {
-    gl.clearColor(0.6, 0.6, 0.6, 1)
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
-    let mdlMatrix = mat4.create()
-
-    // draw the ground
-    mat4.translate(mdlMatrix, mdlMatrix, [0, -1, 0])
-    mat4.scale(mdlMatrix, mdlMatrix, [1.5, 0.1, 1.5])
-    drawOneObject(cube, mdlMatrix, 1.0, 0.4, 0.4, true)
-
-    // draw the cube on the light source
-    mat4.identity(mdlMatrix)
-    mat4.translate(mdlMatrix, mdlMatrix, new Float32Array(light))
-    mat4.scale(mdlMatrix, mdlMatrix, [0.1, 0.1, 0.1])
-    drawOneObject(cube, mdlMatrix, 0.9, 0.9, 0.3, false)
-
-    drawCar()
-    drawItem()
-}
-
-const drawCar = () => {
-    let carMdlMatrix = mat4.create()
-    mat4.identity(carMdlMatrix)
-    // body
-    mat4.translate(carMdlMatrix, carMdlMatrix, [carX, -0.6, carZ])
-    let carBodyMdlMatrix = mat4.clone(carMdlMatrix)
-    mat4.scale(carMdlMatrix, carMdlMatrix, [0.4, 0.1, 0.2])
-    drawOneObject(cube, carMdlMatrix, 0.4, 0.4, 1.0, true)
-    // wheels
-    for (let i = 0; i < 4; i++) {
-        mat4.copy(carMdlMatrix, carBodyMdlMatrix)
-        let x = i < 2 ? 0.3 : -0.3
-        let z = i % 2 === 0 ? 0.15 : -0.15
-        mat4.translate(carMdlMatrix, carMdlMatrix, [x, -0.2, z])
-        mat4.scale(carMdlMatrix, carMdlMatrix, [0.1, 0.1, 0.05])
-        drawOneObject(cube, carMdlMatrix, 1, 1, 1, true)
-    }
-    // arm1
-    mat4.copy(carMdlMatrix, carBodyMdlMatrix)
-    mat4.translate(carMdlMatrix, carMdlMatrix, [-0.35, 0.15, 0])
-    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[0]))
-    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
-    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
-    drawOneObject(cube, carMdlMatrix, 0.5, 1, 0, true)
-    // arm2
-    mat4.scale(carMdlMatrix, carMdlMatrix, [1 / 0.05, 1 / 0.2, 1 / 0.05])
-    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
-    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[1]))
-    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.2, 0])
-    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
-    drawOneObject(cube, carMdlMatrix, 0.5, 0, 1, true)
-    // arm3
-    mat4.scale(carMdlMatrix, carMdlMatrix, [1 / 0.05, 1 / 0.2, 1 / 0.05])
-    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.2, 0])
-    mat4.rotateZ(carMdlMatrix, carMdlMatrix, degToRad(carAngle[2]))
-    mat4.translate(carMdlMatrix, carMdlMatrix, [0, 0.15, 0])
-
-    // calculate the hand position
-    handPos = vec4.fromValues(0, 0.15, 0, 1)
-    vec4.transformMat4(handPos, handPos, carMdlMatrix)
-
-    mat4.scale(carMdlMatrix, carMdlMatrix, [0.05, 0.2, 0.05])
-    drawOneObject(cube, carMdlMatrix, 1, 0.5, 0, true)
-}
-
-const drawItem = () => {
-    let itemMdlMatrix = mat4.create()
-    mat4.identity(itemMdlMatrix)
-    mat4.translate(itemMdlMatrix, itemMdlMatrix, new Float32Array(itemXYZ))
-
-    itemPos = vec4.fromValues(0, 0, 0, 1)
-    vec4.transformMat4(itemPos, itemPos, itemMdlMatrix)
-
-    let dist = vec4.distance(handPos, itemPos)
-    let bodyColor = [0.5, 0.5, 0.5]
-    if (isGrab) {
-        for (let i = 0; i < 3; ++i)
-            itemXYZ[i] = handPos[i]
-        bodyColor = [0.9, 0.3, 0.9]
-    } else if (dist < 0.2) {
-        isTouch = true
-        bodyColor = [0.9, 0.9, 0.3]
-    } else {
-        isTouch = false
-    }
-
-    mat4.identity(itemMdlMatrix)
-    mat4.translate(itemMdlMatrix, itemMdlMatrix, new Float32Array(itemXYZ))
-    let itemBodyMdlMatrix = mat4.clone(itemMdlMatrix)
-    mat4.scale(itemMdlMatrix, itemMdlMatrix, [0.15, 0.15, 0.15])
-    drawOneObject(cube, itemMdlMatrix, bodyColor[0], bodyColor[1], bodyColor[2], true)
-
-    for (let i = 0; i < 2; ++i) {
-        mat4.copy(itemMdlMatrix, itemBodyMdlMatrix)
-        const z = i === 0 ? 0.2 : -0.2
-        mat4.translate(itemMdlMatrix, itemMdlMatrix, [0, 0.15, z])
-        mat4.rotateZ(itemMdlMatrix, itemMdlMatrix, degToRad(itemAngle[i]))
-        mat4.translate(itemMdlMatrix, itemMdlMatrix, [0, 0.15, 0])
-        mat4.scale(itemMdlMatrix, itemMdlMatrix, [0.05, 0.15, 0.05])
-        drawOneObject(cube, itemMdlMatrix, 0.3, 1, 0.8, true)
-    }
-}
-
-// obj: the object components
-// mdlMatrix: the model matrix without mouse rotation
-// colorR, G, B: object color
-const drawOneObject = (obj: VertexInfo[], mdlMatrix: mat4, colorR: number, colorG: number, colorB: number, mouseRotation: boolean) => {
-    // model Matrix (part of the mvp matrix)
-    let modelMatrix = mat4.create()
-
-    if (mouseRotation) {
-        mat4.fromRotation(modelMatrix, degToRad(angleY), [1, 0, 0])
-        mat4.rotate(modelMatrix, modelMatrix, degToRad(angleX), [0, 1, 0])
-    }
-
-    let zoomVal = zoom.value / 10
-    mat4.scale(modelMatrix, modelMatrix, [zoomVal, zoomVal, zoomVal])
-
-    mat4.multiply(modelMatrix, modelMatrix, mdlMatrix)
-
-    // mvp: projection * view * model matrix
-    let proMatrix = mat4.create()
-    let viewMatrix = mat4.create()
-    let mvpMatrix = mat4.create()
-    mat4.perspective(proMatrix, degToRad(30), 1, 0.1, 100)
-    mat4.lookAt(viewMatrix, new Float32Array(camera), [0, 0, 0], [0, 1, 0])
-    mat4.multiply(mvpMatrix, proMatrix, viewMatrix)
-    mat4.multiply(mvpMatrix, mvpMatrix, modelMatrix)
-
-    // normal matrix
-    let normalMatrix = mat4.create()
-    mat4.invert(normalMatrix, modelMatrix)
-    mat4.transpose(normalMatrix, normalMatrix)
-
-    gl.uniform3f(program.u_LightPosition, light[0], light[1], light[2])
-    gl.uniform3f(program.u_ViewPosition, camera[0], camera[1], camera[2])
-    gl.uniform1f(program.u_Ka, 0.2)
-    gl.uniform1f(program.u_Kd, 0.7)
-    gl.uniform1f(program.u_Ks, 1.0)
-    gl.uniform1f(program.u_shininess, 10.0)
-    gl.uniform3f(program.u_Color, colorR, colorG, colorB)
-
-    gl.uniformMatrix4fv(program.u_MvpMatrix, false, mvpMatrix)
-    gl.uniformMatrix4fv(program.u_modelMatrix, false, modelMatrix)
-    gl.uniformMatrix4fv(program.u_normalMatrix, false, normalMatrix)
-
-    for (let i = 0; i < obj.length; i++) {
-        initAttributeVariable(gl, program.a_Position, obj[i].vertexBuffer)
-        initAttributeVariable(gl, program.a_Normal, obj[i].normalBuffer)
-        gl.drawArrays(gl.TRIANGLES, 0, obj[i].numVertices)
-    }
-}
-
-let mouseLastX: number
-let mouseLastY: number
-let mouseDragging = false
-
-const mouseDown = (ev: MouseEvent) => {
-    let x = ev.clientX;
-    let y = ev.clientY;
-    let rect = (ev.target as HTMLElement).getBoundingClientRect();
-    if (rect.left <= x && x < rect.right && rect.top <= y && y < rect.bottom) {
-        mouseLastX = x;
-        mouseLastY = y;
-        mouseDragging = true;
-    }
-}
-
-const mouseUp = () => {
-    mouseDragging = false;
-}
-
-function mouseMove(ev: MouseEvent) {
-    let x = ev.clientX;
-    let y = ev.clientY;
-    if (mouseDragging) {
-        const factor = 100 / canvas.height; // 100 determine the speed you rotate the object
-        const dx = factor * (x - mouseLastX);
-        const dy = factor * (y - mouseLastY);
-        angleX += dx;
-        angleY += dy;
-    }
-    mouseLastX = x;
-    mouseLastY = y;
-    draw();
-}
 </script>
