@@ -37,7 +37,7 @@ function initArrBufForLaterUse(gl: WebGLRenderingContext, data: Float32Array, nu
     }
 }
 
-function initVertexBufForLaterUse(gl: WebGLRenderingContext, vertices: number[], normals: number[] | null, texCoords: number[] | null): VertexInfo {
+export function initVertexBufForLaterUse(gl: WebGLRenderingContext, vertices: number[], normals: number[] | null, texCoords: number[] | null): VertexInfo {
     let nVertices = vertices.length / 3
     let o = {} as VertexInfo
     o.vertexBuffer = initArrBufForLaterUse(gl, new Float32Array(vertices), 3, gl.FLOAT)
@@ -101,11 +101,9 @@ export function initFramebuffer(gl: WebGLRenderingContext, offScreenWidth: numbe
     return frameBuf
 }
 
-export async function loadOBJtoCreateVBO(gl: WebGLRenderingContext, objFile: string): Promise<VertexInfo[]> {
+export async function loadOBJtoCreateVBO(gl: WebGLRenderingContext, objTxt: string): Promise<VertexInfo[]> {
     let objComponents: VertexInfo[] = [];
-    const response = await fetch(objFile);
-    const text = await response.text();
-    let obj = parseOBJ(text);
+    let obj = parseOBJ(objTxt);
     for (let i = 0; i < obj.geometries.length; i++) {
         let o = initVertexBufForLaterUse(
             gl,
@@ -263,4 +261,124 @@ function parseOBJ(text: string) {
         geometries,
         materialLibs,
     };
+}
+
+export function initCubeTexture(
+    gl: WebGLRenderingContext,
+    posXName: string, negXName: string,
+    posYName: string, negYName: string,
+    posZName: string, negZName: string,
+    imgWidth: number, imgHeight: number
+) {
+    let texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+
+    const faceInfos = [
+        {
+            target: gl.TEXTURE_CUBE_MAP_POSITIVE_X,
+            fName: posXName,
+        },
+        {
+            target: gl.TEXTURE_CUBE_MAP_NEGATIVE_X,
+            fName: negXName,
+        },
+        {
+            target: gl.TEXTURE_CUBE_MAP_POSITIVE_Y,
+            fName: posYName,
+        },
+        {
+            target: gl.TEXTURE_CUBE_MAP_NEGATIVE_Y,
+            fName: negYName,
+        },
+        {
+            target: gl.TEXTURE_CUBE_MAP_POSITIVE_Z,
+            fName: posZName,
+        },
+        {
+            target: gl.TEXTURE_CUBE_MAP_NEGATIVE_Z,
+            fName: negZName,
+        },
+    ];
+    faceInfos.forEach((faceInfo) => {
+        const {target, fName} = faceInfo;
+        gl.texImage2D(target, 0, gl.RGBA, imgWidth, imgHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+        let image = new Image();
+        image.onload = function () {
+            gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+            gl.texImage2D(target, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+            gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+        };
+        image.src = fName;
+    });
+    gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+
+    return texture;
+}
+
+export function initTexture(gl: WebGLRenderingContext, img: HTMLCanvasElement) {
+    let tex = gl.createTexture()
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
+    gl.bindTexture(gl.TEXTURE_2D, tex)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+    return tex
+}
+
+export function parseTexture(objContent: string, mtlContent: string): string[] {
+    const usemtls: string[] = []
+    const objLines = objContent.split('\n')
+    objLines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts[0] === 'usemtl') {
+            usemtls.push(parts[1]);
+        }
+    });
+
+    const mtlLines = mtlContent.split('\n')
+    const textureMap = new Map<string, string>()
+    let currentMtl = ''
+    mtlLines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts[0] === 'newmtl') {
+            currentMtl = parts[1]
+        } else if (parts[0] === 'map_Kd' && currentMtl !== '') {
+            textureMap.set(currentMtl, parts[1])
+        }
+    });
+
+    const result: string[] = []
+    usemtls.forEach(usemtl => {
+        const texture = textureMap.get(usemtl)
+        if (texture) {
+            result.push(texture)
+        }
+    })
+    return result
+}
+
+export function initFrameBufferForCubemapRendering(gl: WebGLRenderingContext, offScreenWidth: number, offScreenHeight: number) {
+    let frameBuf = {} as FramebufferInfo
+
+    let texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, texture);
+    gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    for (let i = 0; i < 6; i++) {
+        gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA, offScreenWidth, offScreenHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    let depthBuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, offScreenWidth, offScreenHeight);
+    let frameBuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuffer);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
+
+    if (frameBuffer && texture) {
+        frameBuf.framebuffer = frameBuffer
+        frameBuf.texture = texture
+    }
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return frameBuf;
 }

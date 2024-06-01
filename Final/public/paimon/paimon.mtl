@@ -1,0 +1,82 @@
+# Blender 4.1.1 MTL File: 'None'
+# www.blender.org
+
+newmtl 头发
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/头发.jpg
+map_d Texture/头发.jpg
+
+newmtl 披风
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/披风2.jpg
+map_d Texture/披风2.jpg
+
+newmtl 皮肤
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/衣服.jpg
+map_d Texture/衣服.jpg
+
+newmtl 眼白
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/脸.jpg
+map_d Texture/脸.jpg
+
+newmtl 眼睛
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/头发.jpg
+map_d Texture/头发.jpg
+
+newmtl 脸
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/脸.jpg
+map_d Texture/脸.jpg
+
+newmtl 衣服
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/衣服.jpg
+map_d Texture/衣服.jpg
+
+newmtl 表情
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+illum 2
+map_Kd Texture/表情.png
+map_d Texture/表情.png
