@@ -1,6 +1,8 @@
-import { createApp } from 'vue'
+import {createApp} from 'vue'
 import './style.css'
 import App from './App.vue'
 // import 'webgl-lint'
+import {MessagePlugin} from 'tdesign-vue-next';
+import 'tdesign-vue-next/es/style/index.css';
 
-createApp(App).mount('#app')
+createApp(App).use(MessagePlugin).mount('#app')
