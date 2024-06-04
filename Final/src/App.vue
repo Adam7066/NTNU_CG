@@ -149,7 +149,7 @@ let paimon: ObjInfo
 let slime: ObjInfo
 let stone: ObjInfo
 
-let cameraIdx = 1
+let cameraIdx = 0
 let camera = [0, 0, 5]
 let TPVOffset = [0, 0, 2]
 let cameraDir = [0, 0, -1]
