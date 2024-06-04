@@ -1,34 +1,80 @@
 <template>
-    <div class="m-4 py-2 px-4 absolute bottom-0 bg-gray-500/80 rounded-xl font-extrabold text-blue-800 text-xl">
-        <div>滑鼠可拖動場景</div>
-        <div>操控角色：W / S</div>
-        <div>切換視角：V</div>
+    <div v-show="startFlag">
+        <video autoplay muted @ended="onVideoEnded" class="w-screen h-screen" :width="width" :height="height">
+            <source src="/start.mp4" type="video/mp4"/>
+        </video>
+        <div v-if="videoEnded">
+            <div
+                class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center"
+            >
+                <div class="text-5xl font-semibold">
+                    NTNU CG
+                    <br/>
+                    <br/>
+                    Final Project
+                </div>
+            </div>
+            <div class="absolute bottom-0 mb-20 flex justify-center w-full">
+                <button @click="startFlag=false"
+                        class="rounded-2xl border border-emerald-500 bg-blue-200 px-8 py-2 w-3xl">
+                    <span class="text-2xl font-semibold">啟動</span>
+                </button>
+            </div>
+        </div>
     </div>
-    <canvas ref="crosshairRef" :width="25" :height="25"
-            class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-        Please use a browser that support "canvas"
-    </canvas>
-    <canvas ref="canvasRef" :width="width" :height="height"
-            @mousedown="mouseDown($event)"
-            @mouseup="mouseUp()"
-            @mousemove="mouseMove($event)"
-    >
-        Please use a browser that support "canvas"
-    </canvas>
+    <div v-show="!startFlag">
+        <div
+            class="m-4 py-2 px-4 w-[320px] absolute bottom-0 bg-gray-500/80 rounded-xl font-extrabold text-black text-xl">
+            <div>滑鼠可拖動場景</div>
+            <div>切換視角：V</div>
+            <div>前進 / 後退：W / S</div>
+            <br/>
+            <div>
+                射擊：T (當前目標：
+                <span v-if="!showStone && canShoot" class="text-red-700">O</span>
+                <span v-else>X</span>
+                )
+            </div>
+            <div>
+                撿取：G (當前目標：
+                <span v-if="showStone && canGetStone" class="text-red-700">O</span>
+                <span v-else>X</span>
+                )
+            </div>
+            <div>
+                重設目標：R
+            </div>
+        </div>
+        <div class="absolute flex items-center m-4">
+            <img src="/stone/stone.png" class="w-12 h-12"/>
+            <div class="ml-4 text-3xl font-semibold text-red-500">{{ stoneNum }}</div>
+        </div>
+        <canvas ref="crosshairRef" :width="25" :height="25"
+                class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+            Please use a browser that support "canvas"
+        </canvas>
+        <canvas ref="canvasRef" :width="width" :height="height"
+                @mousedown="mouseDown($event)"
+                @mouseup="mouseUp()"
+                @mousemove="mouseMove($event)"
+        >
+            Please use a browser that support "canvas"
+        </canvas>
+    </div>
 </template>
 
 <script setup lang="ts">
 import {onMounted, ref} from 'vue'
-import {useWindowSize, onKeyStroke, useRafFn} from '@vueuse/core'
+import {onKeyStroke, useRafFn, useWindowSize} from '@vueuse/core'
 import {
     createProgram,
     initAttributeVariable,
-    initVertexBufForLaterUse,
-    loadOBJtoCreateVBO,
     initCubeTexture,
-    initFrameBufferForCubemapRendering,
     initFramebuffer,
-    loadOBJModel
+    initFrameBufferForCubemapRendering,
+    initVertexBufForLaterUse,
+    loadOBJModel,
+    loadOBJtoCreateVBO
 } from './scripts/webglUtils'
 import {degToRad} from './scripts/utils'
 import mainVert from './shaders/main.vert'
@@ -41,10 +87,21 @@ import texOnCubeVert from './shaders/texOnCube.vert'
 import texOnCubeFrag from './shaders/texOnCube.frag'
 import shadowVert from './shaders/shadow.vert'
 import shadowFrag from './shaders/shadow.frag'
-import {mat4, vec3} from 'gl-matrix'
-import {FramebufferInfo, VertexInfo, ObjInfo} from './scripts/types'
+import {mat4, vec3, vec4} from 'gl-matrix'
+import {FramebufferInfo, ObjInfo, VertexInfo} from './scripts/types'
+import {MessagePlugin} from 'tdesign-vue-next';
 
 const {width, height} = useWindowSize()
+
+const startFlag = ref(true)
+const videoEnded = ref(false)
+const onVideoEnded = () => {
+    videoEnded.value = true
+}
+const canShoot = ref(false)
+const showStone = ref(false)
+const canGetStone = ref(false)
+const stoneNum = ref(0)
 
 declare global {
     interface WebGLProgram {
@@ -102,6 +159,7 @@ const slimePos = [[1, 0, 0], [0, 0.5, -1], [-1, -0.5, 0]]
 const slimeFloatSpeed = 0.01
 const slimeRotateCenter = [0, 0, 0]
 let slimeRotateAngle = 0
+let stonePos = [0, 0, 1]
 let stoneRotateAngle = 0
 
 onMounted(async () => {
@@ -121,7 +179,6 @@ onMounted(async () => {
         crosshairCtx.lineTo(centerX, centerY + size / 2);
         crosshairCtx.strokeStyle = color;
         crosshairCtx.stroke();
-
 
         canvas = canvasRef.value as HTMLCanvasElement
         gl = canvas.getContext('webgl') as WebGLRenderingContext
@@ -156,9 +213,10 @@ onMounted(async () => {
         slime = await loadOBJModel(gl, 'slime', 'slime/slime.obj', 'slime/slime.mtl')
         stone = await loadOBJModel(gl, 'stone', 'stone/stone.obj', 'stone/stone.mtl')
 
-        draw()
+        resume()
     }
 )
+
 
 const initProgram = () => {
     program = createProgram(gl, mainVert, mainFrag)
@@ -215,14 +273,15 @@ const initProgram = () => {
 }
 
 const frames = ref(0)
-const {} = useRafFn(() => {
+const {resume} = useRafFn(() => {
     frames.value++
     slimeRotateAngle += 0.3
     stoneRotateAngle += 0.5
-})
+    if (showStone.value && stonePos[1] > -2.5) stonePos[1] -= 0.01
+    draw()
+}, {immediate: false})
 
 const draw = () => {
-
     // For Shadow
     gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo.framebuffer)
     gl.viewport(0, 0, offScreenWidth, offScreenHeight)
@@ -232,7 +291,8 @@ const draw = () => {
 
     let playerMvpFromLight = drawShadow(paimon.obj, getPlayerMdlMatrix())
     let cubeMvpFromLight = drawShadow(cubeObj, getCubeMdlMatrix())
-    let stoneMvpFromLight = drawShadow(stone.obj, getStoneMdlMatrix())
+    let stoneMvpFromLight = mat4.create()
+    if (showStone.value) stoneMvpFromLight = drawShadow(stone.obj, getStoneMdlMatrix())
     // slime
     let slimeMvpFromLight: mat4[] = []
     getSlimeMdlMatrix().forEach((mdlMatrix, _) => {
@@ -240,14 +300,14 @@ const draw = () => {
     })
 
     //========================================//
-    let mvpFromLight = [
-        playerMvpFromLight,
-        cubeMvpFromLight,
-        stoneMvpFromLight,
-        ...slimeMvpFromLight
-    ]
-    renderCubeMap(0, 0, 0, mvpFromLight)
-
+    if (!showStone.value) {
+        let mvpFromLight = [
+            playerMvpFromLight,
+            cubeMvpFromLight,
+            ...slimeMvpFromLight
+        ]
+        renderCubeMap(0, 0, 0, mvpFromLight)
+    }
 
     // For main scene
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -267,14 +327,15 @@ const draw = () => {
     vpMatrix = getVPMatrix(false)
     drawEnvCube(vpMatrix)
     drawOneObject(cubeObj, getCubeMdlMatrix(), vpMatrix, cubeMvpFromLight, 0.8, 0.5, 0.7)
-    drawWithTexture(
-        stone.obj,
-        getStoneMdlMatrix(),
-        vpMatrix,
-        stoneMvpFromLight,
-        stone.obj.map((_, i) => stone.textures.get(stone.objCompImgIdx[i]) as WebGLTexture)
-    )
-    // slime
+    if (showStone.value) {
+        drawWithTexture(
+            stone.obj,
+            getStoneMdlMatrix(),
+            vpMatrix,
+            stoneMvpFromLight,
+            stone.obj.map((_, i) => stone.textures.get(stone.objCompImgIdx[i]) as WebGLTexture)
+        )
+    }
     for (let i = 0; i < slimePos.length; i++) {
         drawWithTexture(
             slime.obj,
@@ -285,10 +346,15 @@ const draw = () => {
         )
     }
 
-    let drMdlMatrix = mat4.create()
-    mat4.translate(drMdlMatrix, drMdlMatrix, new Float32Array(slimeRotateCenter))
-    mat4.scale(drMdlMatrix, drMdlMatrix, [0.4, 0.4, 0.4])
-    drawObjectWithDynamicReflection(cubeObj, drMdlMatrix, vpMatrix, 1, 1, 1)
+    const [origin, direction] = getRayFromScreen(canvas.width / 2, canvas.height / 2)
+    if (!showStone.value) {
+        let drMdlMatrix = mat4.create()
+        mat4.translate(drMdlMatrix, drMdlMatrix, new Float32Array(slimeRotateCenter))
+        mat4.scale(drMdlMatrix, drMdlMatrix, [0.4, 0.4, 0.4])
+        drawObjectWithDynamicReflection(cubeObj, drMdlMatrix, vpMatrix, 1, 1, 1)
+        canShoot.value = intersectRayWithCube(origin, direction, new Float32Array(slimeRotateCenter), 0.8)
+    }
+    canGetStone.value = intersectRayWithCube(origin, direction, new Float32Array(stonePos), 0.5)
 }
 
 const getPlayerMdlMatrix = (): mat4 => {
@@ -307,7 +373,7 @@ const getCubeMdlMatrix = (): mat4 => {
 
 const getStoneMdlMatrix = (): mat4 => {
     let stoneMdlMatrix = mat4.create()
-    mat4.translate(stoneMdlMatrix, stoneMdlMatrix, [0, -2.5, 1])
+    mat4.translate(stoneMdlMatrix, stoneMdlMatrix, new Float32Array(stonePos))
     mat4.rotateY(stoneMdlMatrix, stoneMdlMatrix, degToRad(stoneRotateAngle))
     mat4.scale(stoneMdlMatrix, stoneMdlMatrix, [3, 4, 3])
     return stoneMdlMatrix
@@ -548,24 +614,77 @@ const renderCubeMap = (camX: number, camY: number, camZ: number, mvpFromLight: m
             paimon.obj.map((_, i) => paimon.textures.get(paimon.objCompImgIdx[i]) as WebGLTexture)
         )
         drawOneObject(cubeObj, getCubeMdlMatrix(), vpMatrix, mvpFromLight[1], 0.8, 0.5, 0.7)
-        drawWithTexture(
-            stone.obj,
-            getStoneMdlMatrix(),
-            vpMatrix,
-            mvpFromLight[2],
-            stone.obj.map((_, i) => stone.textures.get(stone.objCompImgIdx[i]) as WebGLTexture)
-        )
         getSlimeMdlMatrix().forEach((mdlMatrix, i) => {
             drawWithTexture(
                 slime.obj,
                 mdlMatrix,
                 vpMatrix,
-                mvpFromLight[3 + i],
+                mvpFromLight[2 + i],
                 slime.obj.map((_, j) => slime.textures.get(slime.objCompImgIdx[j]) as WebGLTexture)
             )
         })
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+const getRayFromScreen = (x: number, y: number) => {
+    const ndcX = (2 * x) / canvas.width - 1
+    const ndcY = 1 - (2 * y) / canvas.height
+    const clipSpace = vec4.fromValues(ndcX, ndcY, -1, 1)
+
+    const invProMatrix = mat4.create()
+    let proMatrix = mat4.create()
+    mat4.perspective(proMatrix, degToRad(60), 1, 0.1, 100)
+    mat4.invert(invProMatrix, proMatrix)
+    const viewSpace = vec4.create()
+    vec4.transformMat4(viewSpace, clipSpace, invProMatrix)
+    viewSpace[2] = -1
+    viewSpace[3] = 0
+
+    const invViewMatrix = mat4.create()
+
+    let rotateMatrix = mat4.create()
+    mat4.fromRotation(rotateMatrix, degToRad(angleY), [1, 0, 0])
+    mat4.rotate(rotateMatrix, rotateMatrix, degToRad(angleX), [0, 1, 0])
+    let viewDir = vec3.fromValues(cameraDir[0], cameraDir[1], cameraDir[2])
+    let newViewDir = vec3.create()
+    vec3.transformMat4(newViewDir, viewDir, rotateMatrix)
+    let viewMatrix = mat4.create()
+    mat4.lookAt(viewMatrix, new Float32Array(camera), [camera[0] + newViewDir[0], camera[1] + newViewDir[1], camera[2] + newViewDir[2]], [0, 1, 0])
+    mat4.invert(invViewMatrix, viewMatrix)
+    const worldSpace = vec4.create()
+    vec4.transformMat4(worldSpace, viewSpace, invViewMatrix)
+
+    const origin = vec3.fromValues(camera[0], camera[1], camera[2])
+    const direction = vec3.fromValues(worldSpace[0], worldSpace[1], worldSpace[2])
+    vec3.normalize(direction, direction)
+    return [origin, direction]
+}
+
+const intersectRayWithCube = (origin: vec3, direction: vec3, cubeCenter: vec3, cubeSize: number) => {
+    const tMin = -1000
+    const tMax = 1000
+    let tNear = tMin
+    let tFar = tMax
+    for (let i = 0; i < 3; i++) {
+        if (Math.abs(direction[i]) < 0.0001) {
+            if (origin[i] < cubeCenter[i] - cubeSize / 2 || origin[i] > cubeCenter[i] + cubeSize / 2) {
+                return false
+            }
+        } else {
+            let t1 = (cubeCenter[i] - cubeSize / 2 - origin[i]) / direction[i]
+            let t2 = (cubeCenter[i] + cubeSize / 2 - origin[i]) / direction[i]
+            if (t1 > t2) {
+                let temp = t1
+                t1 = t2
+                t2 = temp
+            }
+            if (t1 > tNear) tNear = t1
+            if (t2 < tFar) tFar = t2
+            if (tNear > tFar || tFar < 0) return false
+        }
+    }
+    return true
 }
 
 let mouseLastX: number
@@ -630,5 +749,29 @@ onKeyStroke(['w', 'W', 's', 'S'], (e) => {
         playerPos[2] -= newViewDir[2] * 0.1
     }
     draw()
+})
+onKeyStroke(['t', 'T'], () => {
+    if (canShoot.value) showStone.value = true
+})
+
+const initStone = () => {
+    showStone.value = false
+    stonePos = [0, 0, 1]
+    stoneRotateAngle = 0
+}
+onKeyStroke(['r', 'R'], () => {
+    initStone()
+})
+onKeyStroke(['g', 'G'], () => {
+    if (showStone.value && canGetStone.value) {
+        let addNum = 5
+        if(stonePos[1] > -1.5) addNum = 10;
+        stoneNum.value += addNum
+        MessagePlugin.loading({
+            content: "獲得「原石」 * " + addNum.toString(),
+            placement: "left"
+        })
+        initStone()
+    }
 })
 </script>

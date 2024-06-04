@@ -317,7 +317,7 @@ export function initCubeTexture(
     return texture;
 }
 
-function initTexture(gl: WebGLRenderingContext, img: HTMLCanvasElement) {
+function initTexture(gl: WebGLRenderingContext, img: HTMLImageElement) {
     let tex = gl.createTexture()
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
     gl.bindTexture(gl.TEXTURE_2D, tex)
@@ -394,13 +394,7 @@ export async function loadOBJModel(gl: WebGLRenderingContext, modelName: string,
         let img = new Image()
         img.src = `${modelName}/${imgNames[i]}`
         img.onload = () => {
-            const canvas = document.createElement('canvas')
-            canvas.width = 512
-            canvas.height = 512
-            const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-
-            let tex = initTexture(gl, canvas)
+            let tex = initTexture(gl, img)
             if (tex) textures.set(imgNames[i], tex)
         }
     }
