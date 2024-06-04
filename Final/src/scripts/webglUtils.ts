@@ -1,4 +1,4 @@
-import {BufferInfo, FramebufferInfo, VertexInfo} from './types'
+import {BufferInfo, FramebufferInfo, VertexInfo, ObjInfo} from './types'
 
 function createShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader {
     const shader = gl.createShader(type)
@@ -317,7 +317,7 @@ export function initCubeTexture(
     return texture;
 }
 
-export function initTexture(gl: WebGLRenderingContext, img: HTMLCanvasElement) {
+function initTexture(gl: WebGLRenderingContext, img: HTMLCanvasElement) {
     let tex = gl.createTexture()
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
     gl.bindTexture(gl.TEXTURE_2D, tex)
@@ -326,7 +326,7 @@ export function initTexture(gl: WebGLRenderingContext, img: HTMLCanvasElement) {
     return tex
 }
 
-export function parseTexture(objContent: string, mtlContent: string): string[] {
+function parseTexture(objContent: string, mtlContent: string): string[] {
     const usemtls: string[] = []
     const objLines = objContent.split('\n')
     objLines.forEach(line => {
@@ -381,4 +381,28 @@ export function initFrameBufferForCubemapRendering(gl: WebGLRenderingContext, of
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return frameBuf;
+}
+
+export async function loadOBJModel(gl: WebGLRenderingContext, modelName: string, objPath: string, mtlPath: string): Promise<ObjInfo> {
+    const textures = new Map<string, WebGLTexture>()
+    const objTxt = await (await fetch(objPath)).text()
+    const mtlTxt = await (await fetch(mtlPath)).text()
+    const obj = await loadOBJtoCreateVBO(gl, objTxt)
+    const objCompImgIdx = parseTexture(objTxt, mtlTxt)
+    const imgNames = Array.from(new Set(objCompImgIdx))
+    for (let i = 0; i < imgNames.length; i++) {
+        let img = new Image()
+        img.src = `${modelName}/${imgNames[i]}`
+        img.onload = () => {
+            const canvas = document.createElement('canvas')
+            canvas.width = 512
+            canvas.height = 512
+            const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+
+            let tex = initTexture(gl, canvas)
+            if (tex) textures.set(imgNames[i], tex)
+        }
+    }
+    return {obj, textures, objCompImgIdx, imgNames}
 }

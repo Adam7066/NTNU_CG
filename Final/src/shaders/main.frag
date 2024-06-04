@@ -8,6 +8,9 @@ uniform float u_shininess;
 uniform vec3 u_Color;
 varying vec3 v_Normal;
 varying vec3 v_PositionInWorld;
+uniform sampler2D u_ShadowMap;
+varying vec4 v_PositionFromLight;
+const float deMachThreshold = 0.005;
 
 void main() {
     vec3 ambientLightColor = u_Color;
@@ -22,10 +25,15 @@ void main() {
 
     if (nDotL > 0.0) {
         vec3 R = reflect(-lightDirection, normal);
-        // V: the vector, point to viewer
         vec3 V = normalize(u_ViewPosition - v_PositionInWorld);
         float specAngle = clamp(dot(R, V), 0.0, 1.0);
         specular = u_Ks * pow(specAngle, u_shininess) * specularLightColor;
     }
-    gl_FragColor = vec4(ambient + diffuse + specular, 1.0);
+
+    vec3 shadowCoord = (v_PositionFromLight.xyz/v_PositionFromLight.w)/2.0 + 0.5;
+    vec4 rgbaDepth = texture2D(u_ShadowMap, shadowCoord.xy);
+    float depth = rgbaDepth.r;
+    float visibility = (shadowCoord.z > depth + deMachThreshold) ? 0.3 : 1.0;
+
+    gl_FragColor = vec4( ambient + visibility * (diffuse + specular), 1.0);
 }

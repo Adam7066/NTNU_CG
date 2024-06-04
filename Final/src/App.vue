@@ -1,10 +1,13 @@
 <template>
-    <div class="m-4 py-2 px-4 absolute bg-gray-500/50 rounded-xl font-extrabold text-red-600">
+    <div class="m-4 py-2 px-4 absolute bottom-0 bg-gray-500/80 rounded-xl font-extrabold text-blue-800 text-xl">
         <div>滑鼠可拖動場景</div>
         <div>操控角色：W / S</div>
         <div>切換視角：V</div>
     </div>
-
+    <canvas ref="crosshairRef" :width="25" :height="25"
+            class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+        Please use a browser that support "canvas"
+    </canvas>
     <canvas ref="canvasRef" :width="width" :height="height"
             @mousedown="mouseDown($event)"
             @mouseup="mouseUp()"
@@ -23,9 +26,9 @@ import {
     initVertexBufForLaterUse,
     loadOBJtoCreateVBO,
     initCubeTexture,
-    initTexture,
-    parseTexture,
-    initFrameBufferForCubemapRendering
+    initFrameBufferForCubemapRendering,
+    initFramebuffer,
+    loadOBJModel
 } from './scripts/webglUtils'
 import {degToRad} from './scripts/utils'
 import mainVert from './shaders/main.vert'
@@ -36,8 +39,10 @@ import envCubeVert from './shaders/envCube.vert'
 import envCubeFrag from './shaders/envCube.frag'
 import texOnCubeVert from './shaders/texOnCube.vert'
 import texOnCubeFrag from './shaders/texOnCube.frag'
+import shadowVert from './shaders/shadow.vert'
+import shadowFrag from './shaders/shadow.frag'
 import {mat4, vec3} from 'gl-matrix'
-import {FramebufferInfo, VertexInfo} from './scripts/types'
+import {FramebufferInfo, VertexInfo, ObjInfo} from './scripts/types'
 
 const {width, height} = useWindowSize()
 
@@ -51,120 +56,109 @@ declare global {
         u_normalMatrix: WebGLUniformLocation | null
         u_LightPosition: WebGLUniformLocation | null
         u_ViewPosition: WebGLUniformLocation | null
+        u_MvpMatrixOfLight: WebGLUniformLocation | null
         u_Ka: WebGLUniformLocation | null
         u_Kd: WebGLUniformLocation | null
         u_Ks: WebGLUniformLocation | null
         u_shininess: WebGLUniformLocation | null
         u_Color: WebGLUniformLocation | null
         u_Sampler0: WebGLUniformLocation | null
+        u_ShadowMap: WebGLUniformLocation | null
         u_envCubeMap: WebGLUniformLocation | null
         u_viewDirectionProjectionInverse: WebGLUniformLocation | null
     }
 }
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const crosshairRef = ref<HTMLCanvasElement | null>(null)
 let canvas: HTMLCanvasElement
+let crosshairCanvas: HTMLCanvasElement
 let gl: WebGLRenderingContext
 let program: WebGLProgram
 let texProgram: WebGLProgram
 let envCubeProgram: WebGLProgram
 let texOnCubeProgram: WebGLProgram
+let shadowProgram: WebGLProgram
 let fbo: FramebufferInfo
-let offScreenWidth = 512
-let offScreenHeight = 512
+let shadowFbo: FramebufferInfo
+let offScreenWidth = 2048
+let offScreenHeight = 2048
 
 let angleX = 0, angleY = 0
 let cubeObj: VertexInfo[] = []
 let quadObj: VertexInfo
 let cubeMapTex: WebGLTexture | null
-let paimonObj: VertexInfo[] = []
-let paimonTextures = new Map<string, WebGLTexture>()
-let paimonObjCompImgIdx: string[] = []
-let paimonImgNames: string[] = []
-let slimeObj: VertexInfo[] = []
-let slimeTextures = new Map<string, WebGLTexture>()
-let slimeObjCompImgIdx: string[] = []
-let slimeImgNames: string[] = []
+let paimon: ObjInfo
+let slime: ObjInfo
+let stone: ObjInfo
 
 let cameraIdx = 1
-let camera = [0, 0, 0]
+let camera = [0, 0, 5]
 let TPVOffset = [0, 0, 2]
 let cameraDir = [0, 0, -1]
-let light = [1, 1.5, 1.5]
-let playerPos = [0, 0, 0]
+let light = [-5, 5, 8]
+let playerPos = [0, 0, 5]
+const slimePos = [[1, 0, 0], [0, 0.5, -1], [-1, -0.5, 0]]
+const slimeFloatSpeed = 0.01
+const slimeRotateCenter = [0, 0, 0]
 let slimeRotateAngle = 0
+let stoneRotateAngle = 0
 
 onMounted(async () => {
-    canvas = canvasRef.value as HTMLCanvasElement
-    gl = canvas.getContext('webgl') as WebGLRenderingContext
-    gl.enable(gl.DEPTH_TEST)
+        crosshairCanvas = crosshairRef.value as HTMLCanvasElement
+        const crosshairCtx = crosshairCanvas.getContext('2d') as CanvasRenderingContext2D
+        const centerX = crosshairCanvas.width / 2
+        const centerY = crosshairCanvas.height / 2
+        const size = 50
+        const color = 'red'
+        crosshairCtx.beginPath();
+        crosshairCtx.moveTo(centerX - size / 2, centerY);
+        crosshairCtx.lineTo(centerX + size / 2, centerY);
+        crosshairCtx.strokeStyle = color;
+        crosshairCtx.stroke();
+        crosshairCtx.beginPath();
+        crosshairCtx.moveTo(centerX, centerY - size / 2);
+        crosshairCtx.lineTo(centerX, centerY + size / 2);
+        crosshairCtx.strokeStyle = color;
+        crosshairCtx.stroke();
 
-    initProgram()
 
-    const cubeObjTxt = await (await fetch('cube.obj')).text()
-    cubeObj = await loadOBJtoCreateVBO(gl, cubeObjTxt)
+        canvas = canvasRef.value as HTMLCanvasElement
+        gl = canvas.getContext('webgl') as WebGLRenderingContext
+        gl.enable(gl.DEPTH_TEST)
 
-    const quad = [
-        -1, -1, 1,
-        1, -1, 1,
-        -1, 1, 1,
-        -1, 1, 1,
-        1, -1, 1,
-        1, 1, 1
-    ]
-    quadObj = initVertexBufForLaterUse(gl, quad, null, null)
+        initProgram()
 
-    cubeMapTex = initCubeTexture(gl,
-        "posx.jpg", "negx.jpg",
-        "posy.jpg", "negy.jpg",
-        "posz.jpg", "negz.jpg",
-        2048, 2048
-    )
+        fbo = initFrameBufferForCubemapRendering(gl, offScreenWidth, offScreenHeight)
+        shadowFbo = initFramebuffer(gl, offScreenWidth, offScreenHeight)
 
-    const paimonObjTxt = await (await fetch('paimon/paimon.obj')).text()
-    const paimonMtlTxt = await (await fetch('paimon/paimon.mtl')).text()
-    paimonObj = await loadOBJtoCreateVBO(gl, paimonObjTxt)
-    paimonObjCompImgIdx = parseTexture(paimonObjTxt, paimonMtlTxt)
-    paimonImgNames = Array.from(new Set(paimonObjCompImgIdx))
-    for (let i = 0; i < paimonImgNames.length; i++) {
-        let img = new Image()
-        img.src = `paimon/${paimonImgNames[i]}`
-        img.onload = () => {
-            const canvas = document.createElement('canvas')
-            canvas.width = 512
-            canvas.height = 512
-            const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
-            ctx.drawImage(img, 0, 0, 512, 512)
+        cubeMapTex = initCubeTexture(gl,
+            "posx.jpg", "negx.jpg",
+            "posy.jpg", "negy.jpg",
+            "posz.jpg", "negz.jpg",
+            2048, 2048
+        )
 
-            let tex = initTexture(gl, canvas)
-            if (tex) paimonTextures.set(paimonImgNames[i], tex)
-        }
+        const cubeObjTxt = await (await fetch('cube.obj')).text()
+        cubeObj = await loadOBJtoCreateVBO(gl, cubeObjTxt)
+
+        const quad = [
+            -1, -1, 1,
+            1, -1, 1,
+            -1, 1, 1,
+            -1, 1, 1,
+            1, -1, 1,
+            1, 1, 1
+        ]
+        quadObj = initVertexBufForLaterUse(gl, quad, null, null)
+
+        paimon = await loadOBJModel(gl, 'paimon', 'paimon/paimon.obj', 'paimon/paimon.mtl')
+        slime = await loadOBJModel(gl, 'slime', 'slime/slime.obj', 'slime/slime.mtl')
+        stone = await loadOBJModel(gl, 'stone', 'stone/stone.obj', 'stone/stone.mtl')
+
+        draw()
     }
-
-    const slimeObjTxt = await (await fetch('slime/slime.obj')).text()
-    const slimeMtlTxt = await (await fetch('slime/slime.mtl')).text()
-    slimeObj = await loadOBJtoCreateVBO(gl, slimeObjTxt)
-    slimeObjCompImgIdx = parseTexture(slimeObjTxt, slimeMtlTxt)
-    slimeImgNames = Array.from(new Set(slimeObjCompImgIdx))
-    for (let i = 0; i < slimeImgNames.length; i++) {
-        let img = new Image()
-        img.src = `slime/${slimeImgNames[i]}`
-        img.onload = () => {
-            const canvas = document.createElement('canvas')
-            canvas.width = 512
-            canvas.height = 512
-            const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
-            ctx.drawImage(img, 0, 0, 512, 512)
-
-            let tex = initTexture(gl, canvas)
-            if (tex) slimeTextures.set(slimeImgNames[i], tex)
-        }
-    }
-
-    fbo = initFrameBufferForCubemapRendering(gl, offScreenWidth, offScreenHeight)
-
-    draw()
-})
+)
 
 const initProgram = () => {
     program = createProgram(gl, mainVert, mainFrag)
@@ -175,10 +169,12 @@ const initProgram = () => {
     program.u_normalMatrix = gl.getUniformLocation(program, 'u_normalMatrix');
     program.u_LightPosition = gl.getUniformLocation(program, 'u_LightPosition');
     program.u_ViewPosition = gl.getUniformLocation(program, 'u_ViewPosition');
+    program.u_MvpMatrixOfLight = gl.getUniformLocation(program, 'u_MvpMatrixOfLight');
     program.u_Ka = gl.getUniformLocation(program, 'u_Ka');
     program.u_Kd = gl.getUniformLocation(program, 'u_Kd');
     program.u_Ks = gl.getUniformLocation(program, 'u_Ks');
     program.u_shininess = gl.getUniformLocation(program, 'u_shininess');
+    program.u_ShadowMap = gl.getUniformLocation(program, "u_ShadowMap");
     program.u_Color = gl.getUniformLocation(program, 'u_Color');
 
     texProgram = createProgram(gl, texVert, texFrag)
@@ -190,11 +186,13 @@ const initProgram = () => {
     texProgram.u_normalMatrix = gl.getUniformLocation(texProgram, 'u_normalMatrix');
     texProgram.u_LightPosition = gl.getUniformLocation(texProgram, 'u_LightPosition');
     texProgram.u_ViewPosition = gl.getUniformLocation(texProgram, 'u_ViewPosition');
+    texProgram.u_MvpMatrixOfLight = gl.getUniformLocation(texProgram, 'u_MvpMatrixOfLight');
     texProgram.u_Ka = gl.getUniformLocation(texProgram, 'u_Ka');
     texProgram.u_Kd = gl.getUniformLocation(texProgram, 'u_Kd');
     texProgram.u_Ks = gl.getUniformLocation(texProgram, 'u_Ks');
     texProgram.u_shininess = gl.getUniformLocation(texProgram, 'u_shininess');
     texProgram.u_Sampler0 = gl.getUniformLocation(texProgram, "u_Sampler0")
+    texProgram.u_ShadowMap = gl.getUniformLocation(texProgram, "u_ShadowMap");
 
     envCubeProgram = createProgram(gl, envCubeVert, envCubeFrag)
     envCubeProgram.a_Position = gl.getAttribLocation(envCubeProgram, 'a_Position');
@@ -210,32 +208,124 @@ const initProgram = () => {
     texOnCubeProgram.u_ViewPosition = gl.getUniformLocation(texOnCubeProgram, 'u_ViewPosition');
     texOnCubeProgram.u_envCubeMap = gl.getUniformLocation(texOnCubeProgram, 'u_envCubeMap');
     texOnCubeProgram.u_Color = gl.getUniformLocation(texOnCubeProgram, 'u_Color');
+
+    shadowProgram = createProgram(gl, shadowVert, shadowFrag)
+    shadowProgram.a_Position = gl.getAttribLocation(shadowProgram, 'a_Position');
+    shadowProgram.u_MvpMatrix = gl.getUniformLocation(shadowProgram, 'u_MvpMatrix');
 }
 
+const frames = ref(0)
 const {} = useRafFn(() => {
+    frames.value++
     slimeRotateAngle += 0.3
+    stoneRotateAngle += 0.5
 })
 
 const draw = () => {
-    renderCubeMap(0, 0, -5)
 
-    gl.viewport(0, 0, canvas.width, canvas.height)
-    gl.clearColor(0, 0, 0, 1)
+    // For Shadow
+    gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo.framebuffer)
+    gl.viewport(0, 0, offScreenWidth, offScreenHeight)
+    gl.clearColor(0.4, 0.4, 0.4, 1)
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
     gl.enable(gl.DEPTH_TEST)
 
-    let vpMatrix = getVPMatrix(false)
-    drawEnvCube(vpMatrix)
-    drawSlime(vpMatrix)
+    let playerMvpFromLight = drawShadow(paimon.obj, getPlayerMdlMatrix())
+    let cubeMvpFromLight = drawShadow(cubeObj, getCubeMdlMatrix())
+    let stoneMvpFromLight = drawShadow(stone.obj, getStoneMdlMatrix())
+    // slime
+    let slimeMvpFromLight: mat4[] = []
+    getSlimeMdlMatrix().forEach((mdlMatrix, _) => {
+        slimeMvpFromLight.push(drawShadow(slime.obj, mdlMatrix))
+    })
 
-    vpMatrix = getVPMatrix(true)
-    drawPlayer(vpMatrix)
+    //========================================//
+    let mvpFromLight = [
+        playerMvpFromLight,
+        cubeMvpFromLight,
+        stoneMvpFromLight,
+        ...slimeMvpFromLight
+    ]
+    renderCubeMap(0, 0, 0, mvpFromLight)
 
+
+    // For main scene
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, canvas.width, canvas.height)
+    gl.clearColor(0.4, 0.4, 0.4, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+    gl.enable(gl.DEPTH_TEST)
+
+    let vpMatrix = getVPMatrix(true)
+    drawWithTexture(
+        paimon.obj,
+        getPlayerMdlMatrix(),
+        vpMatrix,
+        playerMvpFromLight,
+        paimon.obj.map((_, i) => paimon.textures.get(paimon.objCompImgIdx[i]) as WebGLTexture)
+    )
     vpMatrix = getVPMatrix(false)
-    let mdlMatrix = mat4.create()
-    mat4.translate(mdlMatrix, mdlMatrix, [0, 0, -5])
-    mat4.scale(mdlMatrix, mdlMatrix, [0.3, 0.3, 0.3])
-    drawObjectWithDynamicReflection(cubeObj, mdlMatrix, vpMatrix, 1, 1, 1)
+    drawEnvCube(vpMatrix)
+    drawOneObject(cubeObj, getCubeMdlMatrix(), vpMatrix, cubeMvpFromLight, 0.8, 0.5, 0.7)
+    drawWithTexture(
+        stone.obj,
+        getStoneMdlMatrix(),
+        vpMatrix,
+        stoneMvpFromLight,
+        stone.obj.map((_, i) => stone.textures.get(stone.objCompImgIdx[i]) as WebGLTexture)
+    )
+    // slime
+    for (let i = 0; i < slimePos.length; i++) {
+        drawWithTexture(
+            slime.obj,
+            getSlimeMdlMatrix()[i],
+            vpMatrix,
+            slimeMvpFromLight[i],
+            slime.obj.map((_, j) => slime.textures.get(slime.objCompImgIdx[j]) as WebGLTexture)
+        )
+    }
+
+    let drMdlMatrix = mat4.create()
+    mat4.translate(drMdlMatrix, drMdlMatrix, new Float32Array(slimeRotateCenter))
+    mat4.scale(drMdlMatrix, drMdlMatrix, [0.4, 0.4, 0.4])
+    drawObjectWithDynamicReflection(cubeObj, drMdlMatrix, vpMatrix, 1, 1, 1)
+}
+
+const getPlayerMdlMatrix = (): mat4 => {
+    let playerMdlMatrix = mat4.create()
+    mat4.translate(playerMdlMatrix, playerMdlMatrix, [playerPos[0], playerPos[1] - 1, playerPos[2]])
+    mat4.rotateY(playerMdlMatrix, playerMdlMatrix, degToRad(180))
+    return playerMdlMatrix
+}
+
+const getCubeMdlMatrix = (): mat4 => {
+    let cubeMdlMatrix = mat4.create()
+    mat4.translate(cubeMdlMatrix, cubeMdlMatrix, [0, -3, 0])
+    mat4.scale(cubeMdlMatrix, cubeMdlMatrix, [2, 0.1, 2])
+    return cubeMdlMatrix
+}
+
+const getStoneMdlMatrix = (): mat4 => {
+    let stoneMdlMatrix = mat4.create()
+    mat4.translate(stoneMdlMatrix, stoneMdlMatrix, [0, -2.5, 1])
+    mat4.rotateY(stoneMdlMatrix, stoneMdlMatrix, degToRad(stoneRotateAngle))
+    mat4.scale(stoneMdlMatrix, stoneMdlMatrix, [3, 4, 3])
+    return stoneMdlMatrix
+}
+
+const getSlimeMdlMatrix = (): mat4[] => {
+    let slimeMdlMatrix: mat4[] = []
+    for (let i = 0; i < slimePos.length; i++) {
+        let mdlMatrix = mat4.create()
+        mat4.translate(mdlMatrix, mdlMatrix, [slimeRotateCenter[0], slimeRotateCenter[1], slimeRotateCenter[2]])
+        mat4.rotateY(mdlMatrix, mdlMatrix, degToRad(slimeRotateAngle))
+        mat4.translate(mdlMatrix, mdlMatrix, [-slimeRotateCenter[0], -slimeRotateCenter[1], -slimeRotateCenter[2]])
+        slimePos[i][1] = Math.sin(frames.value * slimeFloatSpeed) * 0.5
+        mat4.translate(mdlMatrix, mdlMatrix, new Float32Array(slimePos[i]))
+        mat4.scale(mdlMatrix, mdlMatrix, [0.2, 0.2, 0.2])
+        slimeMdlMatrix.push(mdlMatrix)
+    }
+    return slimeMdlMatrix
 }
 
 const getVPMatrix = (isPlayer: boolean) => {
@@ -285,58 +375,26 @@ const drawEnvCube = (vpMatrix: mat4) => {
     gl.drawArrays(gl.TRIANGLES, 0, quadObj.numVertices);
 }
 
-const drawPlayer = (vpMatrix: mat4) => {
-    let mdlMatrix = mat4.create()
-    mat4.translate(mdlMatrix, mdlMatrix, [playerPos[0], playerPos[1] - 1, playerPos[2]])
-    mat4.rotateY(mdlMatrix, mdlMatrix, degToRad(180))
-    drawWithTexture(
-        paimonObj,
-        mdlMatrix,
-        vpMatrix,
-        paimonObj.map((_, i) => paimonTextures.get(paimonObjCompImgIdx[i]) as WebGLTexture)
-    )
+const drawShadow = (obj: VertexInfo[], modelMatrix: mat4) => {
+    gl.useProgram(shadowProgram)
+
+    let mvpFromLight = mat4.create()
+    mat4.perspective(mvpFromLight, degToRad(60), offScreenWidth / offScreenHeight, 1, 15)
+    let viewMatrix = mat4.create()
+    mat4.lookAt(viewMatrix, [light[0], light[1], light[2]], [0, 0, 0], [0, 1, 0])
+    mat4.multiply(mvpFromLight, mvpFromLight, viewMatrix)
+    mat4.multiply(mvpFromLight, mvpFromLight, modelMatrix)
+
+    gl.uniformMatrix4fv(shadowProgram.u_MvpMatrix, false, mvpFromLight)
+
+    for (let i = 0; i < obj.length; i++) {
+        initAttributeVariable(gl, shadowProgram.a_Position, obj[i].vertexBuffer)
+        gl.drawArrays(gl.TRIANGLES, 0, obj[i].numVertices)
+    }
+    return mvpFromLight
 }
 
-const drawSlime = (vpMatrix: mat4) => {
-    let mdlMatrix = mat4.create()
-
-    const rotateCenter = [0, 0, -5]
-    mat4.translate(mdlMatrix, mdlMatrix, [rotateCenter[0], rotateCenter[1], rotateCenter[2]])
-    mat4.rotateY(mdlMatrix, mdlMatrix, degToRad(slimeRotateAngle))
-    mat4.translate(mdlMatrix, mdlMatrix, [-rotateCenter[0], -rotateCenter[1], -rotateCenter[2]])
-
-    let mdlBackUp = mat4.clone(mdlMatrix)
-    mat4.translate(mdlMatrix, mdlMatrix, [2, 0, -5])
-    mat4.scale(mdlMatrix, mdlMatrix, [0.2, 0.2, 0.2])
-    drawWithTexture(
-        slimeObj,
-        mdlMatrix,
-        vpMatrix,
-        slimeObj.map((_, i) => slimeTextures.get(slimeObjCompImgIdx[i]) as WebGLTexture)
-    )
-
-    mdlMatrix = mat4.clone(mdlBackUp)
-    mat4.translate(mdlMatrix, mdlMatrix, [-2, 0, -5])
-    mat4.scale(mdlMatrix, mdlMatrix, [0.2, 0.2, 0.2])
-    drawWithTexture(
-        slimeObj,
-        mdlMatrix,
-        vpMatrix,
-        slimeObj.map((_, i) => slimeTextures.get(slimeObjCompImgIdx[i]) as WebGLTexture)
-    )
-
-    mdlMatrix = mat4.clone(mdlBackUp)
-    mat4.translate(mdlMatrix, mdlMatrix, [0, 0, -7])
-    mat4.scale(mdlMatrix, mdlMatrix, [0.4, 0.4, 0.4])
-    drawWithTexture(
-        slimeObj,
-        mdlMatrix,
-        vpMatrix,
-        slimeObj.map((_, i) => slimeTextures.get(slimeObjCompImgIdx[i]) as WebGLTexture)
-    )
-}
-
-const drawOneObject = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, colorR: number, colorG: number, colorB: number) => {
+const drawOneObject = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, mvpFromLight: mat4, colorR: number, colorG: number, colorB: number) => {
     gl.useProgram(program)
 
     let mvpMatrix = mat4.clone(vpMatrix)
@@ -346,13 +404,7 @@ const drawOneObject = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, col
     mat4.invert(normalMatrix, modelMatrix)
     mat4.transpose(normalMatrix, normalMatrix)
 
-    let tmpLight = vec3.fromValues(light[0], light[1], light[2])
-    let rotateMatrix = mat4.create()
-    mat4.fromRotation(rotateMatrix, degToRad(angleY), [1, 0, 0])
-    mat4.rotate(rotateMatrix, rotateMatrix, degToRad(angleX), [0, 1, 0])
-    vec3.transformMat4(tmpLight, tmpLight, rotateMatrix)
-
-    gl.uniform3f(program.u_LightPosition, tmpLight[0], tmpLight[1], tmpLight[2])
+    gl.uniform3f(program.u_LightPosition, light[0], light[1], light[2])
     gl.uniform3f(program.u_ViewPosition, camera[0], camera[1], camera[2])
     gl.uniform1f(program.u_Ka, 0.2)
     gl.uniform1f(program.u_Kd, 0.7)
@@ -363,6 +415,11 @@ const drawOneObject = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, col
     gl.uniformMatrix4fv(program.u_MvpMatrix, false, mvpMatrix)
     gl.uniformMatrix4fv(program.u_modelMatrix, false, modelMatrix)
     gl.uniformMatrix4fv(program.u_normalMatrix, false, normalMatrix)
+    gl.uniformMatrix4fv(program.u_MvpMatrixOfLight, false, mvpFromLight)
+
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, shadowFbo.texture)
+    gl.uniform1i(program.u_ShadowMap, 0);
 
     for (let i = 0; i < obj.length; i++) {
         initAttributeVariable(gl, program.a_Position, obj[i].vertexBuffer)
@@ -371,7 +428,7 @@ const drawOneObject = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, col
     }
 }
 
-const drawWithTexture = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, textures: WebGLTexture[]) => {
+const drawWithTexture = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, mvpFromLight: mat4, textures: WebGLTexture[]) => {
     gl.useProgram(texProgram)
 
     let mvpMatrix = mat4.clone(vpMatrix)
@@ -381,13 +438,7 @@ const drawWithTexture = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, t
     mat4.invert(normalMatrix, modelMatrix)
     mat4.transpose(normalMatrix, normalMatrix)
 
-    let tmpLight = vec3.fromValues(light[0], light[1], light[2])
-    let rotateMatrix = mat4.create()
-    mat4.fromRotation(rotateMatrix, degToRad(angleY), [1, 0, 0])
-    mat4.rotate(rotateMatrix, rotateMatrix, degToRad(angleX), [0, 1, 0])
-    vec3.transformMat4(tmpLight, tmpLight, rotateMatrix)
-
-    gl.uniform3f(texProgram.u_LightPosition, tmpLight[0], tmpLight[1], tmpLight[2])
+    gl.uniform3f(texProgram.u_LightPosition, light[0], light[1], light[2])
     gl.uniform3f(texProgram.u_ViewPosition, camera[0], camera[1], camera[2])
     gl.uniform1f(texProgram.u_Ka, 0.2)
     gl.uniform1f(texProgram.u_Kd, 0.7)
@@ -397,6 +448,11 @@ const drawWithTexture = (obj: VertexInfo[], modelMatrix: mat4, vpMatrix: mat4, t
     gl.uniformMatrix4fv(texProgram.u_MvpMatrix, false, mvpMatrix)
     gl.uniformMatrix4fv(texProgram.u_modelMatrix, false, modelMatrix)
     gl.uniformMatrix4fv(texProgram.u_normalMatrix, false, normalMatrix)
+    gl.uniformMatrix4fv(texProgram.u_MvpMatrixOfLight, false, mvpFromLight)
+
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, shadowFbo.texture)
+    gl.uniform1i(texProgram.u_ShadowMap, 1)
 
     for (let i = 0; i < obj.length; i++) {
         gl.activeTexture(gl.TEXTURE0)
@@ -438,7 +494,7 @@ const drawObjectWithDynamicReflection = (obj: VertexInfo[], modelMatrix: mat4, v
     }
 }
 
-const renderCubeMap = (camX: number, camY: number, camZ: number) => {
+const renderCubeMap = (camX: number, camY: number, camZ: number, mvpFromLight: mat4[]) => {
     const ENV_CUBE_LOOK_DIR = [
         [1.0, 0.0, 0.0],
         [-1.0, 0.0, 0.0],
@@ -483,9 +539,31 @@ const renderCubeMap = (camX: number, camY: number, camZ: number) => {
         )
         mat4.multiply(vpMatrix, vpMatrix, viewMatrix)
 
-        drawSlime(vpMatrix)
-        drawPlayer(vpMatrix)
         drawEnvCube(vpMatrix)
+        drawWithTexture(
+            paimon.obj,
+            getPlayerMdlMatrix(),
+            vpMatrix,
+            mvpFromLight[0],
+            paimon.obj.map((_, i) => paimon.textures.get(paimon.objCompImgIdx[i]) as WebGLTexture)
+        )
+        drawOneObject(cubeObj, getCubeMdlMatrix(), vpMatrix, mvpFromLight[1], 0.8, 0.5, 0.7)
+        drawWithTexture(
+            stone.obj,
+            getStoneMdlMatrix(),
+            vpMatrix,
+            mvpFromLight[2],
+            stone.obj.map((_, i) => stone.textures.get(stone.objCompImgIdx[i]) as WebGLTexture)
+        )
+        getSlimeMdlMatrix().forEach((mdlMatrix, i) => {
+            drawWithTexture(
+                slime.obj,
+                mdlMatrix,
+                vpMatrix,
+                mvpFromLight[3 + i],
+                slime.obj.map((_, j) => slime.textures.get(slime.objCompImgIdx[j]) as WebGLTexture)
+            )
+        })
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
