@@ -15,3 +15,10 @@ export interface FramebufferInfo {
     framebuffer: WebGLFramebuffer
     texture: WebGLTexture
 }
+
+export interface ObjInfo {
+    obj: VertexInfo[]
+    textures: Map<string, WebGLTexture>
+    objCompImgIdx: string[]
+    imgNames: string[]
+}

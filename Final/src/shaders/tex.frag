@@ -6,9 +6,12 @@ uniform float u_Kd;
 uniform float u_Ks;
 uniform float u_shininess;
 uniform sampler2D u_Sampler0;
+uniform sampler2D u_ShadowMap;
 varying vec3 v_Normal;
 varying vec3 v_PositionInWorld;
 varying vec2 v_TexCoord;
+varying vec4 v_PositionFromLight;
+const float deMachThreshold = 0.005;
 
 void main() {
     vec3 texColor = texture2D( u_Sampler0, v_TexCoord ).rgb;
@@ -28,5 +31,11 @@ void main() {
         float specAngle = clamp(dot(R, V), 0.0, 1.0);
         specular = u_Ks * pow(specAngle, u_shininess) * specularLightColor;
     }
-    gl_FragColor = vec4( ambient + diffuse + specular, 1.0 );
+
+    vec3 shadowCoord = (v_PositionFromLight.xyz/v_PositionFromLight.w)/2.0 + 0.5;
+    vec4 rgbaDepth = texture2D(u_ShadowMap, shadowCoord.xy);
+    float depth = rgbaDepth.r;
+    float visibility = (shadowCoord.z > depth + deMachThreshold) ? 0.3 : 1.0;
+
+    gl_FragColor = vec4( ambient + visibility * (diffuse + specular), 1.0);
 }
